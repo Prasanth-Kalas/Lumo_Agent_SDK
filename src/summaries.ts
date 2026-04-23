@@ -128,7 +128,8 @@ export function extractAttachedSummary(input: unknown): AttachedSummary | null {
   if (
     rec.kind !== "structured-cart" &&
     rec.kind !== "structured-itinerary" &&
-    rec.kind !== "structured-booking"
+    rec.kind !== "structured-booking" &&
+    rec.kind !== "structured-reservation"
   ) {
     return null;
   }

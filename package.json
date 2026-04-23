@@ -1,6 +1,6 @@
 {
   "name": "@lumo/agent-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Contract and helpers every Lumo specialist agent implements. Manifest types, OpenAPI → Claude tool bridge, confirmation gate, attached-summary envelope, health probes.",
   "type": "module",
   "main": "./dist/index.js",

@@ -54,7 +54,7 @@ export interface LumoOperationExtensions {
     "x-lumo-tool"?: boolean;
     "x-lumo-cost-tier"?: CostTier;
     /** The shape of the summary the user must have confirmed before this tool fires. */
-    "x-lumo-requires-confirmation"?: "structured-cart" | "structured-itinerary" | "structured-booking" | "structured-trip" | false;
+    "x-lumo-requires-confirmation"?: "structured-cart" | "structured-itinerary" | "structured-booking" | "structured-reservation" | "structured-trip" | false;
     /** PII fields the tool needs in its request body. */
     "x-lumo-pii-required"?: string[];
     /** Tags the orchestrator uses for routing heuristics and analytics. */
@@ -134,7 +134,7 @@ export interface ToolRoutingEntry {
     http_method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
     path: string;
     cost_tier: CostTier;
-    requires_confirmation: "structured-cart" | "structured-itinerary" | "structured-booking" | "structured-trip" | false;
+    requires_confirmation: "structured-cart" | "structured-itinerary" | "structured-booking" | "structured-reservation" | "structured-trip" | false;
     pii_required: string[];
     intent_tags: string[];
     /**

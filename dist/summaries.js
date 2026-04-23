@@ -88,7 +88,8 @@ export function extractAttachedSummary(input) {
         return null;
     if (rec.kind !== "structured-cart" &&
         rec.kind !== "structured-itinerary" &&
-        rec.kind !== "structured-booking") {
+        rec.kind !== "structured-booking" &&
+        rec.kind !== "structured-reservation") {
         return null;
     }
     if (typeof rec.hash !== "string" || !/^[0-9a-f]{64}$/.test(rec.hash))

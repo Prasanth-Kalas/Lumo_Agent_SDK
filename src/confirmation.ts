@@ -19,6 +19,13 @@ export type ConfirmationKind =
   | "structured-itinerary"
   | "structured-booking"
   /**
+   * Restaurant reservation. Emitted by the Restaurant Agent before it
+   * commits a booking via `restaurant_create_reservation`. Payload shape
+   * is `canonicalReservationSummary` in the agent; the shell renders a
+   * `ReservationConfirmationCard` as the user-facing gate.
+   */
+  | "structured-reservation"
+  /**
    * Compound envelope wrapping N single-leg summaries. Used by the shell
    * when a user intent spans multiple specialists (flight + hotel +
    * restaurant). See trips.ts for the envelope shape and docs/rfcs/

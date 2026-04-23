@@ -64,6 +64,7 @@ export interface LumoOperationExtensions {
     | "structured-cart"
     | "structured-itinerary"
     | "structured-booking"
+    | "structured-reservation"
     | "structured-trip"
     | false;
   /** PII fields the tool needs in its request body. */
@@ -155,6 +156,7 @@ export interface ToolRoutingEntry {
     | "structured-cart"
     | "structured-itinerary"
     | "structured-booking"
+    | "structured-reservation"
     | "structured-trip"
     | false;
   pii_required: string[];
