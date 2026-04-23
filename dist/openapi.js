@@ -22,6 +22,7 @@
 export function openApiToClaudeTools(agentId, doc) {
     const tools = [];
     const routing = {};
+    const componentSchemas = doc.components?.schemas ?? {};
     for (const [path, pathItem] of Object.entries(doc.paths ?? {})) {
         const methods = [
             ["GET", pathItem.get],
@@ -33,7 +34,7 @@ export function openApiToClaudeTools(agentId, doc) {
         for (const [method, op] of methods) {
             if (!op || op["x-lumo-tool"] !== true)
                 continue;
-            const schema = extractInputSchema(op);
+            const schema = extractInputSchema(op, componentSchemas);
             const tool = {
                 name: op.operationId,
                 description: op.description?.trim() ||
@@ -134,17 +135,27 @@ export function mergeBridges(results) {
 // ──────────────────────────────────────────────────────────────────────────
 // Internals
 // ──────────────────────────────────────────────────────────────────────────
-function extractInputSchema(op) {
+function extractInputSchema(op, componentSchemas) {
     // Prefer the JSON body schema if present.
     const bodySchema = op.requestBody?.content?.["application/json"]?.schema;
     if (bodySchema && typeof bodySchema === "object") {
-        return normalizeSchema(bodySchema);
+        // OpenAPI lets operations point at a named schema via `$ref`. Claude can't
+        // dereference `$ref` on its own — if we pass the raw ref object through,
+        // the tool input_schema looks empty and Claude fabricates plausible field
+        // names (e.g. `origin`/`destination` when the real schema wants Duffel's
+        // `slices`/`passengers`). Resolve every `$ref` recursively against
+        // `components.schemas` before normalising.
+        const resolved = resolveRefs(bodySchema, componentSchemas, new Set());
+        return normalizeSchema(resolved);
     }
     // Otherwise, synthesize from query/path parameters.
     const properties = {};
     const required = [];
     for (const p of op.parameters ?? []) {
-        properties[p.name] = p.schema ?? { type: "string" };
+        const paramSchema = p.schema
+            ? resolveRefs(p.schema, componentSchemas, new Set())
+            : { type: "string" };
+        properties[p.name] = paramSchema;
         if (p.required)
             required.push(p.name);
     }
@@ -154,6 +165,46 @@ function extractInputSchema(op) {
         required: required.length ? required : undefined,
         additionalProperties: false,
     };
+}
+/**
+ * Walk a JSON Schema fragment and replace every `{"$ref": "#/components/schemas/X"}`
+ * with a (recursively resolved) copy of the target. Keeps a `seen` set so
+ * self-referential schemas don't loop forever — a circular ref collapses to
+ * `{}` which Claude will treat as "any", an acceptable degradation.
+ *
+ * Only handles `#/components/schemas/...` refs. External refs (http URIs,
+ * paths into other files) are left untouched; agents that need those should
+ * bundle their spec first.
+ */
+function resolveRefs(node, componentSchemas, seen) {
+    if (node === null || typeof node !== "object")
+        return node;
+    if (Array.isArray(node)) {
+        return node.map((item) => resolveRefs(item, componentSchemas, seen));
+    }
+    const obj = node;
+    const ref = obj["$ref"];
+    if (typeof ref === "string") {
+        const prefix = "#/components/schemas/";
+        if (!ref.startsWith(prefix))
+            return obj;
+        if (seen.has(ref))
+            return {}; // circular — bail gracefully
+        const name = ref.slice(prefix.length);
+        const target = componentSchemas[name];
+        if (target === undefined)
+            return obj; // dangling ref; leave as-is
+        const nextSeen = new Set(seen);
+        nextSeen.add(ref);
+        return resolveRefs(target, componentSchemas, nextSeen);
+    }
+    // Recurse into every value — cheap and correct for arbitrary JSON Schema
+    // shapes (properties, items, allOf/anyOf/oneOf, patternProperties, …).
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+        out[k] = resolveRefs(v, componentSchemas, seen);
+    }
+    return out;
 }
 function normalizeSchema(schema) {
     // We assume the agent's JSON schema is already "object" at the root; if not,

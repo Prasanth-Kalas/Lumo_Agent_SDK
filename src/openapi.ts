@@ -196,6 +196,8 @@ export function openApiToClaudeTools(
 ): BridgeResult {
   const tools: ClaudeTool[] = [];
   const routing: Record<string, ToolRoutingEntry> = {};
+  const componentSchemas =
+    (doc.components?.schemas as Record<string, unknown> | undefined) ?? {};
 
   for (const [path, pathItem] of Object.entries(doc.paths ?? {})) {
     const methods: Array<[ToolRoutingEntry["http_method"], OpenApiOperation | undefined]> = [
@@ -209,7 +211,7 @@ export function openApiToClaudeTools(
     for (const [method, op] of methods) {
       if (!op || op["x-lumo-tool"] !== true) continue;
 
-      const schema = extractInputSchema(op);
+      const schema = extractInputSchema(op, componentSchemas);
       const tool: ClaudeTool = {
         name: op.operationId,
         description:
@@ -333,18 +335,35 @@ export function mergeBridges(results: BridgeResult[]): BridgeResult {
 // Internals
 // ──────────────────────────────────────────────────────────────────────────
 
-function extractInputSchema(op: OpenApiOperation): ClaudeTool["input_schema"] {
+function extractInputSchema(
+  op: OpenApiOperation,
+  componentSchemas: Record<string, unknown>,
+): ClaudeTool["input_schema"] {
   // Prefer the JSON body schema if present.
   const bodySchema = op.requestBody?.content?.["application/json"]?.schema;
   if (bodySchema && typeof bodySchema === "object") {
-    return normalizeSchema(bodySchema as Record<string, unknown>);
+    // OpenAPI lets operations point at a named schema via `$ref`. Claude can't
+    // dereference `$ref` on its own — if we pass the raw ref object through,
+    // the tool input_schema looks empty and Claude fabricates plausible field
+    // names (e.g. `origin`/`destination` when the real schema wants Duffel's
+    // `slices`/`passengers`). Resolve every `$ref` recursively against
+    // `components.schemas` before normalising.
+    const resolved = resolveRefs(
+      bodySchema as Record<string, unknown>,
+      componentSchemas,
+      new Set<string>(),
+    );
+    return normalizeSchema(resolved as Record<string, unknown>);
   }
 
   // Otherwise, synthesize from query/path parameters.
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
   for (const p of op.parameters ?? []) {
-    properties[p.name] = p.schema ?? { type: "string" };
+    const paramSchema = p.schema
+      ? resolveRefs(p.schema as Record<string, unknown>, componentSchemas, new Set())
+      : { type: "string" };
+    properties[p.name] = paramSchema;
     if (p.required) required.push(p.name);
   }
 
@@ -354,6 +373,49 @@ function extractInputSchema(op: OpenApiOperation): ClaudeTool["input_schema"] {
     required: required.length ? required : undefined,
     additionalProperties: false,
   };
+}
+
+/**
+ * Walk a JSON Schema fragment and replace every `{"$ref": "#/components/schemas/X"}`
+ * with a (recursively resolved) copy of the target. Keeps a `seen` set so
+ * self-referential schemas don't loop forever — a circular ref collapses to
+ * `{}` which Claude will treat as "any", an acceptable degradation.
+ *
+ * Only handles `#/components/schemas/...` refs. External refs (http URIs,
+ * paths into other files) are left untouched; agents that need those should
+ * bundle their spec first.
+ */
+function resolveRefs(
+  node: unknown,
+  componentSchemas: Record<string, unknown>,
+  seen: Set<string>,
+): unknown {
+  if (node === null || typeof node !== "object") return node;
+  if (Array.isArray(node)) {
+    return node.map((item) => resolveRefs(item, componentSchemas, seen));
+  }
+
+  const obj = node as Record<string, unknown>;
+  const ref = obj["$ref"];
+  if (typeof ref === "string") {
+    const prefix = "#/components/schemas/";
+    if (!ref.startsWith(prefix)) return obj;
+    if (seen.has(ref)) return {}; // circular — bail gracefully
+    const name = ref.slice(prefix.length);
+    const target = componentSchemas[name];
+    if (target === undefined) return obj; // dangling ref; leave as-is
+    const nextSeen = new Set(seen);
+    nextSeen.add(ref);
+    return resolveRefs(target, componentSchemas, nextSeen);
+  }
+
+  // Recurse into every value — cheap and correct for arbitrary JSON Schema
+  // shapes (properties, items, allOf/anyOf/oneOf, patternProperties, …).
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[k] = resolveRefs(v, componentSchemas, seen);
+  }
+  return out;
 }
 
 function normalizeSchema(schema: Record<string, unknown>): ClaudeTool["input_schema"] {
