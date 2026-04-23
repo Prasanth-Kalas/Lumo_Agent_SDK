@@ -1,6 +1,6 @@
 {
   "name": "@lumo/agent-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.2",
   "description": "Contract and helpers every Lumo specialist agent implements. Manifest types, OpenAPI → Claude tool bridge, confirmation gate, attached-summary envelope, health probes.",
   "type": "module",
   "main": "./dist/index.js",
@@ -37,6 +37,12 @@
       "import": "./dist/summaries.js",
       "default": "./dist/summaries.js"
     },
+    "./trips": {
+      "source": "./src/trips.ts",
+      "types": "./dist/trips.d.ts",
+      "import": "./dist/trips.js",
+      "default": "./dist/trips.js"
+    },
     "./health": {
       "source": "./src/health.ts",
       "types": "./dist/health.d.ts",
@@ -54,7 +60,11 @@
     "dev": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo",
-    "prepublishOnly": "pnpm run clean && pnpm run build"
+    "smoke:trips": "node scripts/smoke-trips.mjs",
+    "smoke:cancellation": "node scripts/smoke-cancellation.mjs",
+    "smoke": "npm run smoke:trips && npm run smoke:cancellation",
+    "test": "npm run build && npm run smoke",
+    "prepublishOnly": "pnpm run clean && pnpm run build && pnpm run smoke"
   },
   "dependencies": {
     "zod": "^3.23.0"
@@ -73,7 +83,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/lumo-rentals/lumo-agent-sdk.git"
+    "url": "https://github.com/Prasanth-Kalas/Lumo_Agent_SDK.git"
   },
   "publishConfig": {
     "access": "restricted"

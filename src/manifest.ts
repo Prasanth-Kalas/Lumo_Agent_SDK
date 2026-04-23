@@ -28,6 +28,39 @@ export const AgentUIManifestSchema = z.object({
   components: z.array(z.string()).default([]),
 });
 
+/**
+ * Self-declared contract version and capability flags. The shell reads this
+ * at `/.well-known/agent.json` load and fast-fails if the agent is missing
+ * a capability the registry needs.
+ *
+ * Why a separate block rather than top-level fields: capabilities will grow
+ * (compound bookings today, streaming tool results later, …) and nesting
+ * them keeps the top of the manifest stable.
+ */
+export const AgentCapabilitiesSchema = z.object({
+  /**
+   * SDK semver the agent was built against. The shell refuses to register
+   * an agent whose major ≠ the shell's major (breaking contract drift).
+   */
+  sdk_version: z.string().regex(/^\d+\.\d+\.\d+(-[a-z0-9.-]+)?$/),
+  /**
+   * Does this agent participate in compound bookings (trip summaries)?
+   * If false, the orchestrator will never route a leg of a TripSummary
+   * to this agent — it can only be used for single-leg intents. Any
+   * agent with a money tool SHOULD set this to true; the registry will
+   * warn if money + compound=false to flag the config as likely wrong.
+   */
+  supports_compound_bookings: z.boolean().default(false),
+  /**
+   * Does the agent implement the cancellation protocol for every money
+   * tool it exposes? This is validated structurally at OpenAPI load
+   * (see openapi.ts validateCancellationProtocol), but we record the
+   * self-declaration here so health checks can surface the gap early
+   * even before the first tool bridge is built.
+   */
+  implements_cancellation: z.boolean().default(false),
+});
+
 export const AgentManifestSchema = z.object({
   agent_id: z.string().regex(/^[a-z][a-z0-9-]{2,31}$/),
   version: z.string().regex(/^\d+\.\d+\.\d+(-[a-z0-9.-]+)?$/),
@@ -70,6 +103,17 @@ export const AgentManifestSchema = z.object({
   /** ISO region codes where this agent is available to users. */
   supported_regions: z.array(z.string()).default([]),
 
+  /**
+   * Contract/capability block. Defaulted so v0.1.x manifests still parse —
+   * but registry-level validation (in the shell) will refuse to register
+   * an agent that exposes a money tool without `implements_cancellation`.
+   */
+  capabilities: AgentCapabilitiesSchema.default({
+    sdk_version: "0.1.0",
+    supports_compound_bookings: false,
+    implements_cancellation: false,
+  }),
+
   /** Optional metadata for analytics / ops. */
   owner_team: z.string().optional(),
   on_call_escalation: z.string().url().optional(),
@@ -81,6 +125,7 @@ export const AgentManifestSchema = z.object({
 
 export type AgentSLA = z.infer<typeof AgentSLASchema>;
 export type AgentUIManifest = z.infer<typeof AgentUIManifestSchema>;
+export type AgentCapabilities = z.infer<typeof AgentCapabilitiesSchema>;
 export type AgentManifest = z.infer<typeof AgentManifestSchema>;
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -88,12 +133,19 @@ export type AgentManifest = z.infer<typeof AgentManifestSchema>;
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
+ * Authoring-time input shape for `defineManifest`. Defaulted fields
+ * (e.g. `capabilities`) are optional; the parser fills them in.
+ */
+export type AgentManifestInput = z.input<typeof AgentManifestSchema> & {
+  pii_scope: PIIScope[];
+  supported_regions: RegionCode[];
+};
+
+/**
  * Define and validate an agent manifest at build time. Throws with a readable
  * error if the shape is wrong. Use this in your agent's `app/manifest.ts`.
  */
-export function defineManifest(
-  input: AgentManifest & { pii_scope: PIIScope[]; supported_regions: RegionCode[] },
-): AgentManifest {
+export function defineManifest(input: AgentManifestInput): AgentManifest {
   const parsed = AgentManifestSchema.safeParse(input);
   if (!parsed.success) {
     const issues = parsed.error.issues

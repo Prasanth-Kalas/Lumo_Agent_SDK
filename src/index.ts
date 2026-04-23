@@ -10,8 +10,9 @@ export * from "./manifest.js";
 export * from "./openapi.js";
 export * from "./confirmation.js";
 export * from "./summaries.js";
+export * from "./trips.js";
 export * from "./health.js";
 export * from "./errors.js";
 export * from "./types.js";
 
-export const SDK_VERSION = "0.1.0";
+export const SDK_VERSION = "0.2.0-rc.2";

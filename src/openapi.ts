@@ -26,12 +26,35 @@ import type { CostTier } from "./types.js";
  * paths:
  *   /confirm:
  *     post:
- *       operationId: confirm_booking
+ *       operationId: flight_book_offer
  *       x-lumo-tool: true
  *       x-lumo-cost-tier: money
  *       x-lumo-requires-confirmation: structured-itinerary
  *       x-lumo-pii-required: [name, email, payment_method_id]
+ *       x-lumo-cancels: flight_cancel_booking
+ *       x-lumo-compensation-kind: best-effort
+ *   /cancel:
+ *     post:
+ *       operationId: flight_cancel_booking
+ *       x-lumo-tool: true
+ *       x-lumo-cost-tier: free        # cancellation itself never charges
+ *       x-lumo-cancel-for: flight_book_offer
+ *       x-lumo-requires-confirmation: false
  * ```
+ *
+ * Contract — cancellation protocol (see RFC 0001):
+ * - Any operation with `x-lumo-cost-tier: money` MUST declare `x-lumo-cancels`
+ *   pointing to a peer operation on the same agent whose `x-lumo-cancel-for`
+ *   matches it (bidirectional link, validated at registry load).
+ * - The cancel counterpart MUST set `x-lumo-requires-confirmation: false`
+ *   — rollback fires WITHOUT re-prompting the user; a stuck money tool that
+ *   depended on a second human ack would be a Saga deadlock.
+ * - `x-lumo-compensation-kind` classifies what the cancel guarantees:
+ *   • `perfect`     — vendor fully reverses (e.g. reservation hold release)
+ *   • `best-effort` — subject to vendor policy; may be partial refund
+ *   • `manual`      — cancel tool exists but expects human follow-up
+ *   Orchestrator uses this to decide whether to surface
+ *   `rollback_incomplete` warnings to the user proactively.
  */
 export interface LumoOperationExtensions {
   "x-lumo-tool"?: boolean;
@@ -41,11 +64,28 @@ export interface LumoOperationExtensions {
     | "structured-cart"
     | "structured-itinerary"
     | "structured-booking"
+    | "structured-trip"
     | false;
   /** PII fields the tool needs in its request body. */
   "x-lumo-pii-required"?: string[];
   /** Tags the orchestrator uses for routing heuristics and analytics. */
   "x-lumo-intent-tags"?: string[];
+  /**
+   * operationId of the cancel counterpart for this tool. Required for any
+   * operation at cost-tier `money`. The Saga invokes this on rollback.
+   */
+  "x-lumo-cancels"?: string;
+  /**
+   * Set on a cancel tool to declare which money tool it rolls back. Must
+   * point to a peer operation on the same agent whose `x-lumo-cancels`
+   * points back to this one.
+   */
+  "x-lumo-cancel-for"?: string;
+  /**
+   * Declares the strength of the compensation guarantee. See the module
+   * doc comment for semantics. Defaults to `best-effort` on any cancel tool.
+   */
+  "x-lumo-compensation-kind"?: "perfect" | "best-effort" | "manual";
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -115,9 +155,27 @@ export interface ToolRoutingEntry {
     | "structured-cart"
     | "structured-itinerary"
     | "structured-booking"
+    | "structured-trip"
     | false;
   pii_required: string[];
   intent_tags: string[];
+  /**
+   * operationId of the cancel counterpart. Set on money-tier tools only.
+   * The orchestrator's Saga reads this to find the rollback tool without
+   * having to re-parse the OpenAPI doc.
+   */
+  cancels?: string;
+  /**
+   * operationId of the money tool this cancel rolls back. Set on cancel
+   * tools only. The orchestrator uses this to validate that a rollback
+   * invocation matches the original forward tool it's compensating for.
+   */
+  cancel_for?: string;
+  /**
+   * Compensation strength — drives whether the orchestrator surfaces
+   * partial-rollback warnings proactively. Only meaningful on cancel tools.
+   */
+  compensation_kind?: "perfect" | "best-effort" | "manual";
 }
 
 export interface BridgeResult {
@@ -171,11 +229,77 @@ export function openApiToClaudeTools(
         requires_confirmation: op["x-lumo-requires-confirmation"] ?? false,
         pii_required: op["x-lumo-pii-required"] ?? [],
         intent_tags: op["x-lumo-intent-tags"] ?? [],
+        cancels: op["x-lumo-cancels"],
+        cancel_for: op["x-lumo-cancel-for"],
+        compensation_kind:
+          op["x-lumo-compensation-kind"] ??
+          (op["x-lumo-cancel-for"] ? "best-effort" : undefined),
       };
     }
   }
 
+  // Validate cancellation protocol — every money tool must declare a cancel,
+  // every declared cancel must point back, within the same agent's doc.
+  validateCancellationProtocol(agentId, routing);
+
   return { tools, routing };
+}
+
+/**
+ * Registry-load-time check: a money-tier tool without a cancel counterpart
+ * is a contract violation. Compound bookings would deadlock on rollback
+ * if any leg's commit tool couldn't be reversed.
+ *
+ * Rules:
+ *   1. cost_tier === "money"  ⇒  `cancels` is set.
+ *   2. If `cancels` is set, that operationId must exist in this same doc
+ *      (agents may not delegate their cancel to another agent).
+ *   3. The referenced cancel tool must declare `cancel_for` pointing back
+ *      to the money tool (bidirectional link).
+ *   4. Cancel tools must NOT require confirmation — the Saga never asks
+ *      the user a second time.
+ */
+function validateCancellationProtocol(
+  agentId: string,
+  routing: Record<string, ToolRoutingEntry>,
+): void {
+  for (const entry of Object.values(routing)) {
+    if (entry.cost_tier !== "money") continue;
+    if (!entry.cancels) {
+      throw new Error(
+        `[${agentId}] Operation "${entry.operation_id}" is cost-tier "money" ` +
+          `but does not declare \`x-lumo-cancels\`. Every money tool must ship ` +
+          `a cancel counterpart so the Saga can roll it back on compound-booking failure.`,
+      );
+    }
+    const cancelTool = routing[entry.cancels];
+    if (!cancelTool) {
+      throw new Error(
+        `[${agentId}] Operation "${entry.operation_id}" declares ` +
+          `\`x-lumo-cancels: ${entry.cancels}\`, but that operationId is not ` +
+          `exposed as a tool in this agent's OpenAPI. Add \`x-lumo-tool: true\` ` +
+          `to the cancel operation (cancels live on the same agent as the money tool).`,
+      );
+    }
+    if (cancelTool.cancel_for !== entry.operation_id) {
+      throw new Error(
+        `[${agentId}] Cancel link is not bidirectional: ` +
+          `"${entry.operation_id}" points at "${entry.cancels}", but ` +
+          `"${entry.cancels}".x-lumo-cancel-for === ` +
+          `"${cancelTool.cancel_for ?? "(unset)"}". ` +
+          `Both operations must reference each other.`,
+      );
+    }
+    if (cancelTool.requires_confirmation !== false) {
+      throw new Error(
+        `[${agentId}] Cancel tool "${cancelTool.operation_id}" sets ` +
+          `\`x-lumo-requires-confirmation: ${cancelTool.requires_confirmation}\`. ` +
+          `Cancel tools must set \`false\` — the Saga runs rollback without ` +
+          `re-prompting the user (re-prompt would deadlock compound bookings ` +
+          `where an earlier leg has already committed).`,
+      );
+    }
+  }
 }
 
 /**

@@ -17,7 +17,14 @@ import { createHash } from "node:crypto";
 export type ConfirmationKind =
   | "structured-cart"
   | "structured-itinerary"
-  | "structured-booking";
+  | "structured-booking"
+  /**
+   * Compound envelope wrapping N single-leg summaries. Used by the shell
+   * when a user intent spans multiple specialists (flight + hotel +
+   * restaurant). See trips.ts for the envelope shape and docs/rfcs/
+   * 0001-compound-bookings.md for the design.
+   */
+  | "structured-trip";
 
 /**
  * A structured summary rendered to the user in a prior assistant turn.
@@ -137,6 +144,124 @@ const AFFIRMATIVE_REGEX =
 
 export function isAffirmative(userMessage: string): boolean {
   return AFFIRMATIVE_REGEX.test(userMessage.trim());
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Compound evaluator — gate for trip-scoped money tools
+// ──────────────────────────────────────────────────────────────────────────
+
+import type { TripSummary } from "./trips.js";
+
+export interface EvaluateCompoundArgs {
+  /** The trip summary the shell aggregated and the user affirmed. */
+  prior_trip_summary: TripSummary | null;
+  /** `trip_hash` field the LLM put on this leg's tool-call arguments. */
+  tool_call_trip_hash: string | undefined;
+  /**
+   * `trip_leg_order` field the LLM put on the tool-call arguments.
+   * Must equal the next un-committed leg's `order`. Prevents
+   * out-of-order execution.
+   */
+  tool_call_leg_order: number | undefined;
+  /** Orders of legs already successfully committed in this trip. */
+  committed_leg_orders: number[];
+  /**
+   * Whether the user already affirmed the trip. One confirm covers all
+   * legs within the trip as long as the trip hash matches — subsequent
+   * leg dispatches do NOT require re-confirmation.
+   */
+  trip_confirmed: boolean;
+  max_age_ms?: number;
+  now?: number;
+}
+
+/**
+ * Gate for legs of a compound booking. Runs once per leg dispatch.
+ * Checks: trip hash stable, leg order is the next un-committed slot,
+ * user confirmed the trip exactly once.
+ */
+export function evaluateCompoundConfirmation(
+  args: EvaluateCompoundArgs,
+): ConfirmationEvaluation {
+  const now = args.now ?? Date.now();
+  const max_age_ms = args.max_age_ms ?? 10 * 60 * 1000;
+
+  if (!args.prior_trip_summary) {
+    return {
+      ok: false,
+      reason: "no-prior-summary",
+      message:
+        "A trip summary must be presented to the user before any compound-booking leg can run.",
+    };
+  }
+
+  if (args.prior_trip_summary.kind !== "structured-trip") {
+    return {
+      ok: false,
+      reason: "wrong-summary-kind",
+      message: "Compound legs require a structured-trip summary.",
+    };
+  }
+
+  // TripSummary carries no rendered_at on the envelope itself; the shell
+  // tracks it out-of-band. If max_age_ms was passed, we expect caller to
+  // have injected `now` and know what they're doing.
+  void max_age_ms;
+  void now;
+
+  if (
+    !args.tool_call_trip_hash ||
+    args.tool_call_trip_hash !== args.prior_trip_summary.hash
+  ) {
+    return {
+      ok: false,
+      reason: "summary-hash-mismatch",
+      message:
+        "The tool call's trip_hash does not match the trip the user confirmed.",
+    };
+  }
+
+  if (
+    !Number.isInteger(args.tool_call_leg_order) ||
+    (args.tool_call_leg_order as number) < 1
+  ) {
+    return {
+      ok: false,
+      reason: "summary-hash-mismatch",
+      message: "Tool call missing a valid trip_leg_order.",
+    };
+  }
+
+  const committed = new Set(args.committed_leg_orders);
+  // Next un-committed leg is the smallest order not yet in `committed`.
+  const legs = args.prior_trip_summary.payload.legs
+    .slice()
+    .sort((a, b) => a.order - b.order);
+  const nextUncommitted = legs.find((l) => !committed.has(l.order));
+  if (!nextUncommitted) {
+    return {
+      ok: false,
+      reason: "summary-hash-mismatch",
+      message: "All legs of this trip are already committed.",
+    };
+  }
+  if (args.tool_call_leg_order !== nextUncommitted.order) {
+    return {
+      ok: false,
+      reason: "summary-hash-mismatch",
+      message: `Out-of-order leg dispatch: expected order ${nextUncommitted.order}, got ${args.tool_call_leg_order}.`,
+    };
+  }
+
+  if (!args.trip_confirmed) {
+    return {
+      ok: false,
+      reason: "no-user-confirmation",
+      message: "User has not affirmed this trip.",
+    };
+  }
+
+  return { ok: true };
 }
 
 // ──────────────────────────────────────────────────────────────────────────
