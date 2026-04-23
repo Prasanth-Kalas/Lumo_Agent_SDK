@@ -1,0 +1,5 @@
+# Everything not in "files" is excluded by default. This file is a
+# belt-and-suspenders guard against accidental test-file publishing.
+src/**/*.test.ts
+tsconfig.json
+.gitignore

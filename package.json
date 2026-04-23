@@ -1,0 +1,84 @@
+{
+  "name": "@lumo/agent-sdk",
+  "version": "0.1.0",
+  "description": "Contract and helpers every Lumo specialist agent implements. Manifest types, OpenAPI → Claude tool bridge, confirmation gate, attached-summary envelope, health probes.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./manifest": {
+      "source": "./src/manifest.ts",
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js",
+      "default": "./dist/manifest.js"
+    },
+    "./openapi": {
+      "source": "./src/openapi.ts",
+      "types": "./dist/openapi.d.ts",
+      "import": "./dist/openapi.js",
+      "default": "./dist/openapi.js"
+    },
+    "./confirmation": {
+      "source": "./src/confirmation.ts",
+      "types": "./dist/confirmation.d.ts",
+      "import": "./dist/confirmation.js",
+      "default": "./dist/confirmation.js"
+    },
+    "./summaries": {
+      "source": "./src/summaries.ts",
+      "types": "./dist/summaries.d.ts",
+      "import": "./dist/summaries.js",
+      "default": "./dist/summaries.js"
+    },
+    "./health": {
+      "source": "./src/health.ts",
+      "types": "./dist/health.d.ts",
+      "import": "./dist/health.js",
+      "default": "./dist/health.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "prepublishOnly": "pnpm run clean && pnpm run build"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.27.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "typescript": "^5.4.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lumo-rentals/lumo-agent-sdk.git"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  },
+  "engines": {
+    "node": ">=20.10.0"
+  }
+}
