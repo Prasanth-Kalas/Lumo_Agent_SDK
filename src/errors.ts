@@ -23,6 +23,9 @@ export type AgentErrorCode =
   | "payment_failed"
   | "payment_declined"
   | "refund_failed"
+  // Appstore / connection (v0.4)
+  | "connection_required"
+  | "connection_refresh_failed"
   // Generic
   | "internal_error";
 
@@ -83,5 +86,9 @@ export const DEFAULT_USER_COPY: Record<AgentErrorCode, string> = {
   payment_failed: "The payment didn't go through. Want to try a different card?",
   payment_declined: "Your card was declined. Want to try a different card?",
   refund_failed: "The refund didn't go through — I'll flag this to our team.",
+  connection_required:
+    "You'll need to connect that app first. Open the Marketplace and hit Connect.",
+  connection_refresh_failed:
+    "Your connection to that app expired. Reconnect from the Marketplace and I'll pick it back up.",
   internal_error: "Something broke on my end. I've logged it — please try again.",
 };

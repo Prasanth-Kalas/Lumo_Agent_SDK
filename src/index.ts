@@ -15,4 +15,4 @@ export * from "./health.js";
 export * from "./errors.js";
 export * from "./types.js";
 
-export const SDK_VERSION = "0.2.0";
+export const SDK_VERSION = "0.4.0";

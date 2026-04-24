@@ -2,7 +2,7 @@
  * Well-known error shape. Agents return these; the shell maps them to
  * user-facing copy.
  */
-export type AgentErrorCode = "invalid_input" | "missing_pii" | "unsupported_region" | "confirmation_required" | "confirmation_mismatch" | "not_available" | "price_changed" | "out_of_stock" | "upstream_timeout" | "upstream_error" | "rate_limited" | "payment_failed" | "payment_declined" | "refund_failed" | "internal_error";
+export type AgentErrorCode = "invalid_input" | "missing_pii" | "unsupported_region" | "confirmation_required" | "confirmation_mismatch" | "not_available" | "price_changed" | "out_of_stock" | "upstream_timeout" | "upstream_error" | "rate_limited" | "payment_failed" | "payment_declined" | "refund_failed" | "connection_required" | "connection_refresh_failed" | "internal_error";
 export interface AgentError {
     code: AgentErrorCode;
     message: string;

@@ -37,6 +37,112 @@ export const AgentUIManifestSchema = z.object({
  * (compound bookings today, streaming tool results later, …) and nesting
  * them keeps the top of the manifest stable.
  */
+/**
+ * Connection block — introduced in SDK v0.4 to support the Lumo appstore.
+ *
+ * Every agent that holds user-scoped state (a cart, an order history, a
+ * saved payment method, a loyalty account) declares how a Lumo user
+ * "connects" their identity to the agent. The Super Agent reads this
+ * block when rendering the marketplace card ("Connect Food Agent") and
+ * the router reads it to know whether to attach a user-scoped bearer
+ * token on each tool dispatch.
+ *
+ * Three models are allowed today:
+ *
+ *   "oauth2"    — the agent is an OAuth 2.1 Authorization Server. Lumo
+ *                 kicks off the Authorization Code + PKCE flow, stores
+ *                 the returned access/refresh tokens per user, and
+ *                 attaches `Authorization: Bearer <access>` on every
+ *                 tool call. This is the model every Lumo-built agent
+ *                 uses and the one third-party SaaS typically slots into.
+ *
+ *   "lumo_id"   — the agent delegates identity to Lumo. Lumo issues a
+ *                 signed OIDC token per request; the agent trusts Lumo's
+ *                 JWKS. Cheap for Lumo-native agents; doesn't work for
+ *                 third-party SaaS with pre-existing user bases.
+ *
+ *   "none"      — agent exposes only anonymous tools (e.g., a public
+ *                 weather lookup). No per-user state, no bearer, no
+ *                 Connect button in the marketplace.
+ *
+ * An agent with `requires_payment: true` or any money-tier tool MUST NOT
+ * declare `"none"`. The Super Agent will refuse to load such a manifest.
+ *
+ * Why a block, not top-level fields: future additions (API-key-per-user,
+ * MTLS, passkey-bound bearer) extend this block without churning the top
+ * of the manifest. Keep additions backward-compatible or bump SDK major.
+ */
+export const AgentConnectSchema = z.discriminatedUnion("model", [
+  z.object({
+    model: z.literal("oauth2"),
+    /**
+     * The agent's OAuth authorize endpoint. Users are redirected here
+     * with client_id, redirect_uri, scope, state, code_challenge,
+     * code_challenge_method=S256.
+     */
+    authorize_url: z.string().url(),
+    /**
+     * The agent's OAuth token endpoint. Receives the authorization code
+     * and returns access_token, refresh_token, expires_in, token_type=Bearer.
+     */
+    token_url: z.string().url(),
+    /**
+     * Optional revocation endpoint (RFC 7009). Super Agent calls this on
+     * explicit disconnect to tell the agent to invalidate the token
+     * server-side. If not provided, we just delete our copy.
+     */
+    revocation_url: z.string().url().optional(),
+    /**
+     * The scopes the agent supports. Minimum set the agent requires for
+     * ANY tool call should be listed with `required: true` — the
+     * consent UI surfaces that. Additional fine-grained scopes can be
+     * declared optional and the consent UI will let the user toggle.
+     */
+    scopes: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          description: z.string().min(4),
+          required: z.boolean().default(false),
+        }),
+      )
+      .min(1),
+    /**
+     * Env var name the Super Agent looks up for this agent's OAuth
+     * client_id and client_secret. Convention:
+     *   LUMO_<AGENT_ID_SHOUT>_CLIENT_ID / LUMO_<AGENT_ID_SHOUT>_CLIENT_SECRET
+     * Declared here so the orchestrator fails fast with a clear error
+     * instead of a mysterious 401 at token-exchange time.
+     */
+    client_id_env: z.string().regex(/^LUMO_[A-Z0-9_]+_CLIENT_ID$/),
+    client_secret_env: z
+      .string()
+      .regex(/^LUMO_[A-Z0-9_]+_CLIENT_SECRET$/)
+      .optional(),
+    /**
+     * Whether this client is confidential (secret required) or public
+     * (PKCE only). Public is the right default for user-facing apps where
+     * the "secret" would just be bundled in the browser. Confidential is
+     * right for server-to-server where we can keep the secret out of
+     * client code. Lumo Super Agent is always server-side, so
+     * confidential is preferred — but agents that haven't wired secrets
+     * can still register as public.
+     */
+    client_type: z.enum(["public", "confidential"]).default("confidential"),
+  }),
+  z.object({
+    model: z.literal("lumo_id"),
+    /**
+     * Audience claim the agent expects on the OIDC ID token. Typically
+     * the agent's base URL or agent_id.
+     */
+    audience: z.string().min(3),
+  }),
+  z.object({
+    model: z.literal("none"),
+  }),
+]);
+
 export const AgentCapabilitiesSchema = z.object({
   /**
    * SDK semver the agent was built against. The shell refuses to register
@@ -114,6 +220,37 @@ export const AgentManifestSchema = z.object({
     implements_cancellation: false,
   }),
 
+  /**
+   * Connection block — how a Lumo user links their account on THIS agent
+   * to their Lumo identity. See {@link AgentConnectSchema}. Defaulted to
+   * `none` so pre-v0.4 manifests still parse; the registry validator
+   * refuses agents with money tools + model="none".
+   */
+  connect: AgentConnectSchema.default({ model: "none" }),
+
+  /**
+   * Appstore catalog fields (v0.4). Surfaced on /marketplace cards.
+   * Optional so internal/private agents don't have to fill them in.
+   */
+  listing: z
+    .object({
+      /** Square or circular logo, ≥ 128px, hosted by the agent. */
+      logo_url: z.string().url().optional(),
+      /** Marketing hero image for the detail page, wide aspect. */
+      hero_url: z.string().url().optional(),
+      /** Plain-English category for filters: "Food", "Travel", "Productivity", etc. */
+      category: z.string().min(2).optional(),
+      /** Short (≤200 char) paragraphs, 1-5 of them, for the detail page. */
+      about_paragraphs: z.array(z.string().min(8).max(400)).max(5).optional(),
+      /** Links the detail page surfaces in the sidebar. */
+      homepage_url: z.string().url().optional(),
+      privacy_policy_url: z.string().url().optional(),
+      terms_url: z.string().url().optional(),
+      /** Optional pricing note, human-readable: "Free", "Pay-per-use", "Subscription — $9.99/mo". */
+      pricing_note: z.string().max(80).optional(),
+    })
+    .optional(),
+
   /** Optional metadata for analytics / ops. */
   owner_team: z.string().optional(),
   on_call_escalation: z.string().url().optional(),
@@ -126,6 +263,10 @@ export const AgentManifestSchema = z.object({
 export type AgentSLA = z.infer<typeof AgentSLASchema>;
 export type AgentUIManifest = z.infer<typeof AgentUIManifestSchema>;
 export type AgentCapabilities = z.infer<typeof AgentCapabilitiesSchema>;
+export type AgentConnect = z.infer<typeof AgentConnectSchema>;
+export type AgentConnectOAuth2 = Extract<AgentConnect, { model: "oauth2" }>;
+export type AgentConnectLumoId = Extract<AgentConnect, { model: "lumo_id" }>;
+export type AgentConnectNone = Extract<AgentConnect, { model: "none" }>;
 export type AgentManifest = z.infer<typeof AgentManifestSchema>;
 
 // ──────────────────────────────────────────────────────────────────────────
